@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Spotify Ad Refresh Monitor",
+  "version": "1.0.0",
+  "description": "Minimal demo extension that refreshes Spotify Web Player when an ad appears in the DOM.",
+  "action": {
+    "default_title": "Spotify Ad Monitor",
+    "default_popup": "popup.html"
+  },
+  "permissions": ["storage", "tabs", "scripting"],
+  "host_permissions": ["https://open.spotify.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://open.spotify.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
