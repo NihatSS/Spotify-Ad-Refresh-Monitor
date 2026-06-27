@@ -18,32 +18,44 @@
   let lastAdReason = null;
   let observer = null;
   let pollId = null;
+  let extensionContextInvalidated = false;
 
-  initializeContentScript();
+  registerMessageListener();
+  initializeContentScript().catch(handleExtensionError);
 
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === "PING") {
-      sendResponse({ ok: true, running: isRunning });
-      return false;
+  function registerMessageListener() {
+    if (!hasExtensionContext()) {
+      return;
     }
 
-    if (message.type === "START_MONITORING") {
-      startMonitoring();
-      sendResponse({ ok: true });
-      return false;
-    }
+    try {
+      chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+        if (message.type === "PING") {
+          sendResponse({ ok: true, running: isRunning });
+          return false;
+        }
 
-    if (message.type === "STOP_MONITORING") {
-      stopMonitoring();
-      sendResponse({ ok: true });
-      return false;
-    }
+        if (message.type === "START_MONITORING") {
+          startMonitoring();
+          sendResponse({ ok: true });
+          return false;
+        }
 
-    return false;
-  });
+        if (message.type === "STOP_MONITORING") {
+          stopMonitoring();
+          sendResponse({ ok: true });
+          return false;
+        }
+
+        return false;
+      });
+    } catch (error) {
+      handleExtensionError(error);
+    }
+  }
 
   async function initializeContentScript() {
-    const data = await chrome.storage.local.get([ACTIVE_KEY, RESUME_KEY]);
+    const data = await storageGet([ACTIVE_KEY, RESUME_KEY]);
 
     if (!data[ACTIVE_KEY]) {
       return;
@@ -84,13 +96,17 @@
   }
 
   function stopMonitoring() {
+    stopLocalMonitoring();
+    storageSet({ [RESUME_KEY]: false, [STATUS_KEY]: "Stopped" });
+  }
+
+  function stopLocalMonitoring() {
     isRunning = false;
     isRefreshing = false;
     observer?.disconnect();
     observer = null;
     window.clearInterval(pollId);
     pollId = null;
-    chrome.storage.local.set({ [RESUME_KEY]: false, [STATUS_KEY]: "Stopped" });
   }
 
   function handleSpotifyUpdate() {
@@ -185,7 +201,7 @@
     }
 
     if (adDetectionCount >= REQUIRED_AD_DETECTIONS) {
-      refreshSpotifyPage(reason);
+      refreshSpotifyPage(reason).catch(handleExtensionError);
     } else {
       setStatus("Possible ad detected. Confirming...");
     }
@@ -194,7 +210,12 @@
   async function refreshSpotifyPage(reason) {
     isRefreshing = true;
 
-    const data = await chrome.storage.local.get(LAST_REFRESH_KEY);
+    if (!hasExtensionContext()) {
+      stopLocalMonitoring();
+      return;
+    }
+
+    const data = await storageGet(LAST_REFRESH_KEY);
     const lastRefreshAt = Number(data[LAST_REFRESH_KEY] || 0);
     const now = Date.now();
 
@@ -203,19 +224,21 @@
       return;
     }
 
-    await chrome.storage.local.set({
+    const didSaveRefreshState = await storageSet({
       [RESUME_KEY]: true,
       [LAST_REFRESH_KEY]: now,
       [STATUS_KEY]: `Ad detected (${reason}). Refreshing...`
     });
 
-    window.location.reload();
+    if (didSaveRefreshState) {
+      window.location.reload();
+    }
   }
 
   async function resumeAfterReload() {
     await waitForFullPageLoad();
 
-    await chrome.storage.local.set({
+    await storageSet({
       [RESUME_KEY]: false,
       [STATUS_KEY]: "Spotify loaded. Pressing playlist Play..."
     });
@@ -310,6 +333,63 @@
   }
 
   function setStatus(text) {
-    chrome.storage.local.set({ [STATUS_KEY]: text });
+    storageSet({ [STATUS_KEY]: text });
+  }
+
+  async function storageGet(keys) {
+    if (!hasExtensionContext()) {
+      stopLocalMonitoring();
+      return {};
+    }
+
+    try {
+      return await chrome.storage.local.get(keys);
+    } catch (error) {
+      handleExtensionError(error);
+      return {};
+    }
+  }
+
+  async function storageSet(values) {
+    if (!hasExtensionContext()) {
+      stopLocalMonitoring();
+      return false;
+    }
+
+    try {
+      await chrome.storage.local.set(values);
+      return true;
+    } catch (error) {
+      handleExtensionError(error);
+      return false;
+    }
+  }
+
+  function hasExtensionContext() {
+    if (extensionContextInvalidated || typeof chrome === "undefined") {
+      return false;
+    }
+
+    try {
+      return Boolean(chrome.runtime?.id);
+    } catch {
+      extensionContextInvalidated = true;
+      return false;
+    }
+  }
+
+  function handleExtensionError(error) {
+    if (isExtensionContextInvalidatedError(error) || !hasExtensionContext()) {
+      extensionContextInvalidated = true;
+      stopLocalMonitoring();
+      return;
+    }
+
+    console.error("Spotify Ad Monitor error:", error);
+  }
+
+  function isExtensionContextInvalidatedError(error) {
+    const message = String(error?.message || error || "");
+    return message.toLowerCase().includes("extension context invalidated");
   }
 })();
